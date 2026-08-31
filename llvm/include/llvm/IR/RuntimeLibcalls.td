@@ -70,6 +70,7 @@ def IsDXIL : LibcallPredicate<[{TT.isDXIL()}]>;
 def IsHexagon : LibcallPredicate<[{TT.getArch() == Triple::hexagon}]>;
 def IsLanai : LibcallPredicate<[{TT.getArch() == Triple::lanai}]>;
 def IsMSP430 : LibcallPredicate<[{TT.getArch() == Triple::msp430}]>;
+def IsLTHL : LibcallPredicate<[{TT.getArch() == Triple::lthl}]>;
 def IsNVPTX : LibcallPredicate<[{TT.isNVPTX()}]>;
 
 def IsPPC : LibcallPredicate<[{TT.isPPC()}]>;
@@ -2905,6 +2906,32 @@ def LanaiSystemLibrary
                                         __stack_chk_fail, __stack_chk_guard)> {
   let DefaultLibcallCallingConv = FASTCC;
 }
+
+//===----------------------------------------------------------------------===//
+// LTHL Runtime Libcalls
+//===----------------------------------------------------------------------===//
+
+// LTHL is a custom out-of-tree target (Triple::lthl, registered in
+// LTHLTargetInfo.cpp) with no compiler-rt port of its own -- it relies
+// entirely on the standard __divsi3/__udivsi3/__mulsi3/... names
+// DefaultRuntimeLibcallImpls already provides (see LTHLISelLowering.cpp's
+// constructor, which marks MUL/DIV/REM/UMUL_LOHI/SMUL_LOHI Expand to
+// route through exactly these libcalls). Without an entry here, TT's
+// arch predicate matches none of the SystemRuntimeLibrary defs above and
+// every RTLIB::Libcall is unavailable for this triple -- not just the
+// ops actually exercised so far, all of them -- since
+// RuntimeLibcallsInfo::setTargetRuntimeLibcallSets (the generated
+// -gen-runtime-libcalls dispatcher) only marks a libcall impl available
+// if some target's TriplePred here matches. This is unrelated to and
+// independent of Triple::lthl / RegisterTarget<Triple::lthl> in
+// LTHLTargetInfo.cpp -- that registration makes -march=lthl/-mtriple=lthl
+// recognized at all, but says nothing about which runtime calls exist for
+// it, which is exactly what this file controls.
+def isLTHL : RuntimeLibcallAvailability<(all_of IsLTHL)>;
+
+def LTHLSystemLibrary
+    : SystemRuntimeLibrary<isLTHL, (add DefaultRuntimeLibcallImpls,
+                                       __stack_chk_fail, __stack_chk_guard)>;
 
 //===----------------------------------------------------------------------===//
 // Mips16 Runtime Libcalls
