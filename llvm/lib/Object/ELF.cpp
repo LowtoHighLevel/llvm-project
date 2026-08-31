@@ -183,6 +183,13 @@ StringRef llvm::object::getELFRelocationTypeName(uint32_t Machine,
       break;
     }
     break;
+  case ELF::EM_LTHL:
+    switch (Type) {
+#include "llvm/BinaryFormat/ELFRelocs/LTHL.def"
+    default:
+      break;
+    }
+    break;
   default:
     break;
   }

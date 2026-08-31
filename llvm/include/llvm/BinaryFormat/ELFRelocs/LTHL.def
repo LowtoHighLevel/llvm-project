@@ -1,0 +1,20 @@
+
+#ifndef ELF_RELOC
+#error "ELF_RELOC must be defined"
+#endif
+
+// LTHL (LowtoHighLevel) relocation types. Private/local assignment, not
+// an official generic-ABI registration -- see the EM_LTHL comment in
+// llvm/include/llvm/BinaryFormat/ELF.h. Kept in sync with the fixup
+// kinds in llvm/lib/Target/LTHL/MCTargetDesc/LTHLFixupKinds.h and the
+// getRelocType() mapping in
+// llvm/lib/Target/LTHL/MCTargetDesc/LTHLELFObjectWriter.cpp.
+
+ELF_RELOC(R_LTHL_NONE,   0) // No relocation.
+ELF_RELOC(R_LTHL_PC16,   1) // 16-bit signed PC-relative. FormJRL's
+                            // SHORT-REL (J/JZ/JC/JV/JN's branch target).
+ELF_RELOC(R_LTHL_ABS24,  2) // 24-bit absolute. FormI's imm (LD's simm24
+                            // when it's a symbol expression).
+ELF_RELOC(R_LTHL_ABS32,  3) // 32-bit absolute. Reserved for `calltarget`
+                            // -- not attached to any concrete instruction
+                            // yet (see LTHLFixupKinds.h).

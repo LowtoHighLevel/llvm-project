@@ -325,6 +325,16 @@ enum {
   EM_VE = 251,            // NEC SX-Aurora VE
   EM_CSKY = 252,          // C-SKY 32-bit processor
   EM_LOONGARCH = 258,     // LoongArch
+  // LTHL: LowtoHighLevel backend's own private architecture (see
+  // llvm/lib/Target/LTHL/). NOT an official generic-ABI registration --
+  // https://groups.google.com/g/generic-abi has no LTHL entry. Assigned
+  // the next number after the highest real registration above (258) to
+  // minimize collision risk with anything that does get registered
+  // later, the same way EM_LOONGARCH itself was the "next available"
+  // slot when it was added. If LTHL objects ever need to interoperate
+  // outside this toolchain, this number needs a real upstream
+  // reservation first.
+  EM_LTHL = 259,
 };
 
 // Object file classes.
@@ -1103,6 +1113,13 @@ enum : unsigned {
 // ELF Relocation types for Xtensa
 enum {
 #include "ELFRelocs/Xtensa.def"
+};
+
+// ELF Relocation types for LTHL (LowtoHighLevel). See the EM_LTHL comment
+// above -- these R_LTHL_* values are likewise a private assignment, not
+// an official generic-ABI registration.
+enum {
+#include "ELFRelocs/LTHL.def"
 };
 
 #undef ELF_RELOC
