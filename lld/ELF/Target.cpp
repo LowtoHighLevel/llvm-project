@@ -67,6 +67,8 @@ void elf::setTarget(Ctx &ctx) {
     return setHexagonTargetInfo(ctx);
   case EM_LOONGARCH:
     return setLoongArchTargetInfo(ctx);
+  case EM_LTHL:
+    return setLTHLTargetInfo(ctx);
   case EM_MIPS:
     return setMipsTargetInfo(ctx);
   case EM_MSP430:
