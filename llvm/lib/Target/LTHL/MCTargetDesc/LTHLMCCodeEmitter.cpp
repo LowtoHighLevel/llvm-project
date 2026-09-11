@@ -26,6 +26,7 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h" // isInt<N>
 
 #define DEBUG_TYPE "mccodeemitter"
 
@@ -59,11 +60,31 @@ LTHLMCCodeEmitter::getMachineOpValue(const MCInst &MI, const MCOperand &MO,
     // enc running 0-31 via the `foreach I = 0-31` register defs.
     return Ctx.getRegisterInfo()->getEncodingValue(MO.getReg());
 
-  if (MO.isImm())
-    // Field width (5 bits for a register slot, 24 for simm24, ...) is
-    // enforced by the generated getBinaryCodeForInstr itself when it
-    // shifts/ORs this value into the Inst word -- nothing to mask here.
-    return (unsigned)MO.getImm();
+  if (MO.isImm()) {
+    // NOTE: this used to assume field width (5 bits for a register slot,
+    // 24 for simm24, ...) was enforced by the generated
+    // getBinaryCodeForInstr when it shifts/ORs this value into the Inst
+    // word. It isn't -- TableGen's default CodeEmitterGen output trusts
+    // the value handed to it is already correctly sized and does not
+    // mask to the field's declared width before OR-ing it in. An
+    // out-of-range simm24 operand (e.g. a 32-bit constant that should
+    // have been routed through LTHLISelDAGToDAG.cpp's selectConstant()
+    // Horner's-method expansion but wasn't, for whatever reason) does
+    // not get silently truncated -- its high bits bleed directly into
+    // LD's adjacent reg/opcode fields in the same instruction word,
+    // corrupting or completely changing the encoded instruction. This
+    // assert is a last-line-of-defense catch for that, independent of
+    // whatever's supposed to prevent it upstream in ISel.
+    int64_t Imm = MO.getImm();
+    assert(isInt<24>(Imm) &&
+           "LTHLMCCodeEmitter: immediate operand does not fit LD's 24-bit "
+           "signed field -- this should have been routed through "
+           "LTHLISelDAGToDAG.cpp's selectConstant() Horner's-method "
+           "expansion before reaching the emitter. Encoding it directly "
+           "would corrupt adjacent bit-fields (reg/opcode) in the same "
+           "instruction word, not just truncate silently.");
+    return (unsigned)Imm;
+  }
 
   // The only operand type that reaches here with a symbol expression
   // today is LD's simm24 (see LTHLInstrInfo.td's simm24 def -- it has a
