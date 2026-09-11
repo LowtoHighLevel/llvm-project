@@ -76,6 +76,7 @@ add_clang_library(clangDriver
   ToolChains/Hurd.cpp
   ToolChains/LFILinux.cpp
   ToolChains/Linux.cpp
+  ToolChains/LTHL.cpp
   ToolChains/Managarm.cpp
   ToolChains/MipsLinux.cpp
   ToolChains/MinGW.cpp

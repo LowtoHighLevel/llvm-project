@@ -24,6 +24,7 @@
 #include "Targets/Hexagon.h"
 #include "Targets/Lanai.h"
 #include "Targets/LoongArch.h"
+#include "Targets/LTHL.h"
 #include "Targets/M68k.h"
 #include "Targets/MSP430.h"
 #include "Targets/Mips.h"
@@ -829,6 +830,9 @@ std::unique_ptr<TargetInfo> AllocateTarget(const llvm::Triple &Triple,
 
   case llvm::Triple::xtensa:
     return std::make_unique<XtensaTargetInfo>(Triple, Opts);
+
+  case llvm::Triple::lthl:
+    return std::make_unique<LTHLTargetInfo>(Triple, Opts);
   }
 }
 } // namespace targets
