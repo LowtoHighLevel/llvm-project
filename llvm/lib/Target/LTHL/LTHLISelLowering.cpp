@@ -65,6 +65,14 @@ LTHLTargetLowering::LTHLTargetLowering(const TargetMachine &TM,
     setLoadExtAction(ISD::ZEXTLOAD, MVT::i32, VT, Custom);
     setLoadExtAction(ISD::SEXTLOAD, MVT::i32, VT, Custom);
     setLoadExtAction(ISD::EXTLOAD, MVT::i32, VT, Custom);
+    // No i8/i16 register class exists (GPR is i32-only), so narrowing
+    // a computed i32 value back to i8/i16 sign-correctly (e.g. `(char)
+    // (x + y)` after C's integer-promotion arithmetic) is expressed by
+    // legalization as SIGN_EXTEND_INREG rather than an actual truncate.
+    // Expand routes it through shl/sra by (32-width), both of which are
+    // already legal via SHL_PSEUDO/SRA_PSEUDO's runtime-loop custom
+    // inserters.
+    setOperationAction(ISD::SIGN_EXTEND_INREG, VT, Expand);
   }
 
   setMinFunctionAlignment(Align(4));
