@@ -341,6 +341,8 @@ bool LTHLAsmParser::matchAndEmitInstruction(SMLoc Loc, unsigned &Opcode,
   // "call" is a hand-expanded pseudo-mnemonic, not a real
   // LTHLInstrInfo.td instruction -- see expandCall's comment.
   if (static_cast<LTHLOperand &>(*Operands[0]).getToken() == "call")
+  StringRef Mnemonic = static_cast<LTHLOperand &>(*Operands[0]).getToken();
+  if (Mnemonic == "call")
     return expandCall(Operands, Loc, Out);
 
   MCInst Inst;
