@@ -63,6 +63,8 @@ BitVector LTHLRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // R26 = link register (by convention)
   Reserved.set(LTHL::R26);
 
+  Reserved.set(LTHL::R28);
+
   return Reserved;
 }
 
