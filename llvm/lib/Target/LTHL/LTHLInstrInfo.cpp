@@ -362,6 +362,47 @@ bool LTHLInstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
     MBB.erase(MI);
     return true;
   }
+  case LTHL::ZERO_TEST_BR_PSEUDO: {
+    // See ZERO_TEST_BR_PSEUDO's comment in LTHLInstrInfo.td: the real
+    // SUB+JZ+J sequence is built here, post-RA, specifically so nothing
+    // (register-allocator spill code above all) can ever land between
+    // the SUB that sets FLAGS.Zero and the JZ that reads it -- unlike
+    // CALL_PSEUDO's expansion, which bundles for a fixed-offset reason,
+    // this bundles purely to keep that window from reopening.
+    //
+    // Post-RA means no virtual registers are available any more (RA/
+    // VirtRegRewriter has already run) -- R29 is LTHL's dedicated
+    // post-RA scratch register (same convention CALL_PSEUDO's expansion
+    // and LTHLFrameLowering::adjustReg use), globally reserved, so
+    // nothing else can be live in it here.
+    MachineBasicBlock &MBB = *MI.getParent();
+    DebugLoc DL = MI.getDebugLoc();
+    Register Val = MI.getOperand(0).getReg();
+    MachineBasicBlock *Dest = MI.getOperand(1).getMBB();
+
+    MachineBasicBlock *FalseSucc = nullptr;
+    for (MachineBasicBlock *Succ : MBB.successors()) {
+      if (Succ != Dest) {
+        FalseSucc = Succ;
+        break;
+      }
+    }
+    assert(FalseSucc && "ZERO_TEST_BR_PSEUDO's block must have a "
+                         "false-edge successor distinct from Dest");
+
+    MachineInstr &Cmp = *BuildMI(MBB, MI, DL, get(LTHL::SUB), LTHL::R29)
+                             .addReg(Val)
+                             .addReg(LTHL::R0);
+    BuildMI(MBB, MI, DL, get(LTHL::JZ)).addMBB(Dest);
+    MachineInstrBuilder ElseJump =
+        BuildMI(MBB, MI, DL, get(LTHL::J)).addMBB(FalseSucc);
+
+    finalizeBundle(MBB, Cmp.getIterator(),
+                   std::next(ElseJump.getInstr()->getIterator()));
+
+    MBB.erase(MI);
+    return true;
+  }
   }
   return false;
 }

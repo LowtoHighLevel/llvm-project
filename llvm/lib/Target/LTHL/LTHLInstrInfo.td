@@ -727,6 +727,52 @@ def SELECT_CC_PSEUDO : LTHLPseudo<(outs GPR:$rd),
                                      GPR:$rhs, GPR:$tval, GPR:$fval,
                                      timm:$cc))]>;
 
+// Zero-test-and-branch: branch to $dest if $val == 0, otherwise fall
+// through to whichever other successor the containing block already
+// has. This exists specifically so emitShift's two loop-exit tests
+// (see below) don't build a real SUB+JZ pair during custom-insertion
+// (pre-RA) the way BR_CC_PSEUDO's emitCondBranch does.
+//
+// That eager-expansion approach was tried first and caused a real,
+// reproducible bug: the register allocator's generic spill-code
+// placement ("insert spill stores immediately before the block's
+// terminators") has no notion of FLAGS as a live physical register, so
+// it would happily drop a flag-clobbering spill-address ADD (LTHL has
+// no addressing mode, so spill-slot addresses are always computed with
+// a real, flag-setting ADD -- see WRITE's comment above) in between the
+// SUB that sets FLAGS.Zero and the JZ that reads it, corrupting the
+// loop's exit test and hanging it. Wrapping the already-built SUB+JZ in
+// a bundle (llvm::finalizeBundle) was tried as a fix and made things
+// *worse*: finalizeBundle doesn't propagate isTerminator/isBranch onto
+// the synthetic BUNDLE header, so RegAllocFast's own terminator-finding
+// logic (which keys off MI->isTerminator(), not bundle contents) no
+// longer saw a terminator in the block at all and walked off the end of
+// the instruction list.
+//
+// The actual fix, same idiom as RET_PSEUDO/CALL_PSEUDO/ADDRFI above:
+// don't let the real FLAGS-touching instructions exist at all until
+// after register allocation is done with the block. This pseudo itself
+// carries isBranch=1/isTerminator=1 as genuine, individually-declared
+// MCInstrDesc flags (not something aggregated across bundle contents),
+// so every terminator-aware pass -- RegAllocFast included -- sees a
+// real, correctly-flagged terminator in the right place the whole time.
+// It has no Defs=[FLAGS] (nothing DAG/MI-level needs to know about
+// FLAGS until the real SUB exists), so there's no live FLAGS window
+// pre-RA for a spiller to violate in the first place. Only in
+// LTHLInstrInfo::expandPostRAPseudo -- after RegAllocFast, after PEI,
+// the same point CALL_PSEUDO's bundle is already proven safe -- does
+// this become a real SUB+JZ+J sequence, bundled together there.
+//
+// analyzeBranch won't recognize this opcode (same as it doesn't
+// recognize BR_CC_PSEUDO), so it reports "can't analyze" for blocks
+// ending in this pseudo -- a real but acceptable cost (missed
+// branch-folding/block-placement opportunities on the shift loop's
+// entry/latch blocks specifically), not a correctness issue.
+let isBranch = 1, isTerminator = 1 in
+def ZERO_TEST_BR_PSEUDO : LTHLPseudo<(outs), (ins GPR:$val, brtarget:$dest),
+                                      "# ZERO_TEST_BR_PSEUDO $val, $dest",
+                                      []>;
+
 // Variable-amount shifts. LTHL's ALU has no shift instruction at all --
 // only 1-bit rotate-through-carry (ROR/ROL), which themselves have no
 // ISel Pattern (see their comment above -- generic rotl/rotr ISD nodes

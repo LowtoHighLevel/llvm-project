@@ -884,18 +884,18 @@ MachineBasicBlock *LTHLTargetLowering::emitShift(MachineInstr &MI,
   LoopBB->addSuccessor(ExitBB);
   LoopBB->addSuccessor(LoopBB);
 
-  // BB: skip the loop entirely if the shift amount is already zero.
-  //   sub scratch, amt, r0   -- just to set FLAGS.Zero from amt
-  //   jz ExitBB
-  Register ZeroTestScratch = MRI.createVirtualRegister(&LTHL::GPRRegClass);
-  BuildMI(BB, DL, TII.get(LTHL::SUB), ZeroTestScratch)
-      .addReg(AmtReg).addReg(LTHL::R0);
-  BuildMI(BB, DL, TII.get(LTHL::JZ)).addMBB(ExitBB);
-
   // Loop-invariant constant (the per-iteration decrement), materialized
   // once in BB rather than inside LoopBB.
   Register One = MRI.createVirtualRegister(&LTHL::GPRRegClass);
   BuildMI(BB, DL, TII.get(LTHL::LD), One).addImm(1);
+
+  // BB: skip the loop entirely if the shift amount is already zero.
+  // ZERO_TEST_BR_PSEUDO stays an opaque pseudo (isBranch=1/isTerminator=1,
+  // no FLAGS touched yet) all the way through register allocation --
+  // see its comment in LTHLInstrInfo.td for why building a real SUB+JZ
+  // here instead used to hang the loop this expands into.
+  BuildMI(BB, DL, TII.get(LTHL::ZERO_TEST_BR_PSEUDO)).addReg(AmtReg)
+      .addMBB(ExitBB);
 
   // LoopBB:
   //   Val = phi [SrcReg, BB], [NextVal, LoopBB]
@@ -954,11 +954,16 @@ MachineBasicBlock *LTHLTargetLowering::emitShift(MachineInstr &MI,
 
   BuildMI(LoopBB, DL, TII.get(LTHL::SUB), NextAmt).addReg(Amt).addReg(One);
 
-  Register LoopZeroTestScratch = MRI.createVirtualRegister(&LTHL::GPRRegClass);
-  BuildMI(LoopBB, DL, TII.get(LTHL::SUB), LoopZeroTestScratch)
-      .addReg(NextAmt).addReg(LTHL::R0);
-  BuildMI(LoopBB, DL, TII.get(LTHL::JZ)).addMBB(ExitBB);
-  BuildMI(LoopBB, DL, TII.get(LTHL::J)).addMBB(LoopBB);
+  // This ZERO_TEST_BR_PSEUDO is the exact site of the original hang:
+  // the loop's per-iteration zero-test used to be a real SUB
+  // immediately followed by JZ/J, and the register allocator's spiller
+  // would land spill stores for the loop's other live values (Val/
+  // Amt's PHI inputs) right in between them, corrupting FLAGS before JZ
+  // read it. Deferring the real SUB+JZ+J until post-RA (see
+  // ZERO_TEST_BR_PSEUDO's comment in LTHLInstrInfo.td) closes that
+  // window instead of trying to protect it after the fact.
+  BuildMI(LoopBB, DL, TII.get(LTHL::ZERO_TEST_BR_PSEUDO)).addReg(NextAmt)
+      .addMBB(ExitBB);
 
   // ExitBB: DstReg = phi [SrcReg, BB (zero-amount fast path)],
   //                      [NextVal, LoopBB (loop's final value)]
