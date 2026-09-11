@@ -662,7 +662,12 @@ std::string Triple::computeDataLayout(StringRef ABIName) const {
   case Triple::ve:
     return computeVEDataLayout(*this);
   case Triple::lthl:
-    return "e-m:e-p:32:32-i32:32-n32-S32";
+    // Keep in sync with clang/lib/Basic/Targets/LTHL.h's resetDataLayout()
+    // call and its LongLongAlign override -- i64 is explicit here (rather
+    // than left to LLVM's implicit default ABI alignment of 32 for i64)
+    // specifically so this string is the single source of truth Clang's
+    // LongLongAlign is kept in sync with.
+    return "e-m:e-p:32:32-i32:32-i64:32-n32-S32";
   case Triple::amdil:
   case Triple::amdil64:
   case Triple::hsail:
