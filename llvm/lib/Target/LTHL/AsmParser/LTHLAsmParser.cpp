@@ -30,6 +30,8 @@ namespace {
 
 class LTHLOperand;
 
+enum class LTHLShiftKind { SHL, SRL, SRA };
+
 class LTHLAsmParser : public MCTargetAsmParser {
   MCAsmParser &Parser;
 
@@ -52,6 +54,10 @@ class LTHLAsmParser : public MCTargetAsmParser {
   // comment for what it expands into and why it can't be a plain
   // InstAlias.
   bool expandCall(OperandVector &Operands, SMLoc IDLoc, MCStreamer &Out);
+
+  // "shl/srl/sra $rd, $rs1, $amt" pseudo-mnemonic expansion
+  bool expandShift(OperandVector &Operands, SMLoc IDLoc, MCStreamer &Out,
+                    LTHLShiftKind Kind);
 
   MCAsmParser &getParser() const { return Parser; }
   AsmLexer &getLexer() const { return Parser.getLexer(); }
@@ -148,6 +154,11 @@ public:
   StringRef getToken() const {
     assert(Kind == k_Tok && "Invalid access!");
     return Tok;
+  }
+
+  const MCExpr *getImmExpr() const {
+    assert(Kind == k_Imm && "Invalid access!");
+    return Imm;
   }
 
   SMLoc getStartLoc() const override { return Start; }
@@ -279,18 +290,6 @@ bool LTHLAsmParser::parseInstruction(ParseInstructionInfo &Info,
 // "call $addr" isn't a real LTHLInstrInfo.td instruction -- LTHL has no
 // jump-and-link opcode (see LTHLInstrInfo.td's CALL_PSEUDO/ADDPC
 // comments). This hand-expands it into the same four real instructions
-// LTHLInstrInfo::expandPostRAPseudo emits for CALL_PSEUDO, reachable
-// here from hand-written text instead of only from codegen:
-//   ld  r28, $addr       ; r28 -- dedicated scratch register for a
-//                        ; hand-written call's target address (distinct
-//                        ; from r29/r26, both already committed below --
-//                        ; reusing either would clobber the address
-//                        ; before jr ever runs)
-//   ld  r29, 8           ; r29 -- same dedicated scratch
-//                        ; expandPostRAPseudo's own CALL_PSEUDO
-//                        ; expansion already uses for this
-//   add r26, r31, r29    ; ADDPC's real encoding: r26 = return address
-//   jr  r28              ; must immediately follow the add above
 //
 // Clobbers r26 (link register -- expected, same as a real call), r28,
 // r29, and FLAGS (ADDPC's ADD-family side effect). r28 joins r29/r30 as
@@ -333,17 +332,168 @@ bool LTHLAsmParser::expandCall(OperandVector &Operands, SMLoc IDLoc,
   return false;
 }
 
+// "shl/srl/sra $rd, $rs1, $amt" -- like `call` above, none of these are
+// real LTHLInstrInfo.td instructions; LTHL's ALU has no shift
+// instruction at all
+bool LTHLAsmParser::expandShift(OperandVector &Operands, SMLoc IDLoc,
+                                 MCStreamer &Out, LTHLShiftKind Kind) {
+  if (Operands.size() != 4)
+    return Error(IDLoc, "shift requires exactly three operands: "
+                         "destination, source, and amount");
+
+  auto &RdOp = static_cast<LTHLOperand &>(*Operands[1]);
+  auto &RsOp = static_cast<LTHLOperand &>(*Operands[2]);
+  auto &AmtOp = static_cast<LTHLOperand &>(*Operands[3]);
+
+  if (!RdOp.isReg())
+    return Error(RdOp.getStartLoc(), "expected destination register");
+  if (!RsOp.isReg())
+    return Error(RsOp.getStartLoc(), "expected source register");
+  if (!AmtOp.isReg() && !AmtOp.isImm())
+    return Error(AmtOp.getStartLoc(),
+                 "shift amount must be a register or an immediate");
+
+  MCRegister Rd = RdOp.getReg();
+  MCRegister Rs = RsOp.getReg();
+
+  auto emit = [&](unsigned Opc, std::initializer_list<MCOperand> Ops) {
+    MCInst MI;
+    MI.setOpcode(Opc);
+    for (const MCOperand &Op : Ops)
+      MI.addOperand(Op);
+    MI.setLoc(IDLoc);
+    Out.emitInstruction(MI, *STI);
+  };
+
+  // One bit of shift, applied in place to Rd -- the exact same ALU
+  // sequences emitShift's LoopBB builds (see its comment in
+  // LTHLISelLowering.cpp), just operating on a real register instead of
+  // a fresh vreg pair, since hand-written asm has no SSA/PHI to thread
+  // a Val/NextVal split through.
+  auto emitBitOnce = [&]() {
+    switch (Kind) {
+    case LTHLShiftKind::SHL:
+      // Rd += Rd -- doubling; mod-2^32 wraparound is exactly a left
+      // shift by one.
+      emit(LTHL::ADD, {MCOperand::createReg(Rd), MCOperand::createReg(Rd),
+                        MCOperand::createReg(Rd)});
+      break;
+    case LTHLShiftKind::SRL:
+      // Clear Carry (writing the discarded sum to r0 -- see the doc's
+      // NOP encoding, add r0,r0,r0 -- still costs a real ALU cycle and
+      // sets FLAGS, it just doesn't have to land anywhere), then rotate
+      // Rd through it: the cleared carry fills the vacated top bit with
+      // 0.
+      emit(LTHL::ADD, {MCOperand::createReg(LTHL::R0),
+                        MCOperand::createReg(LTHL::R0),
+                        MCOperand::createReg(LTHL::R0)});
+      emit(LTHL::ROR, {MCOperand::createReg(Rd), MCOperand::createReg(Rd),
+                        MCOperand::createReg(LTHL::R0)});
+      break;
+    case LTHLShiftKind::SRA:
+      // Self-add Rd into r0 (discarding the doubled sum -- only its
+      // Carry out matters, which equals Rd's original MSB), then rotate
+      // Rd itself through that carry: the saved sign bit rotates back
+      // in as the new top bit.
+      emit(LTHL::ADD, {MCOperand::createReg(LTHL::R0),
+                        MCOperand::createReg(Rd), MCOperand::createReg(Rd)});
+      emit(LTHL::ROR, {MCOperand::createReg(Rd), MCOperand::createReg(Rd),
+                        MCOperand::createReg(LTHL::R0)});
+      break;
+    }
+  };
+
+  if (AmtOp.isImm()) {
+    int64_t Amt;
+    if (!AmtOp.getImmExpr()->evaluateAsAbsolute(Amt))
+      return Error(AmtOp.getStartLoc(),
+                   "shift amount must be a compile-time constant when not "
+                   "a register -- there's no relocation support for a "
+                   "symbolic unroll count");
+    if (Amt < 0 || Amt > 31)
+      return Error(AmtOp.getStartLoc(),
+                   "shift amount must be between 0 and 31");
+
+    // Rd := Rs, then Amt bits of shift in place -- correct (a no-op
+    // loop body) even for Amt == 0.
+    emit(LTHL::ADD, {MCOperand::createReg(Rd), MCOperand::createReg(Rs),
+                      MCOperand::createReg(LTHL::R0)});
+    for (int64_t I = 0; I < Amt; ++I)
+      emitBitOnce();
+    return false;
+  }
+
+  // Register $amt: the runtime-loop path -- see this function's
+  // top-of-function comment for the r28/r29 scratch convention.
+  MCRegister Amt = AmtOp.getReg();
+  if (Rd == LTHL::R28 || Rd == LTHL::R29)
+    return Error(RdOp.getStartLoc(),
+                 "destination register can't be r28 or r29 when the shift "
+                 "amount is a register -- shl/srl/sra use those as "
+                 "internal scratch registers for the runtime loop");
+  if (Amt == LTHL::R28 || Amt == LTHL::R29)
+    return Error(AmtOp.getStartLoc(),
+                 "shift-amount register can't be r28 or r29 -- shl/srl/sra "
+                 "use those as internal scratch registers for the runtime "
+                 "loop");
+  if (Rd == Amt)
+    return Error(RdOp.getStartLoc(),
+                 "destination and shift-amount registers must differ -- "
+                 "the destination is written (from the source register) "
+                 "before the amount is tested");
+
+  MCContext &Ctx = getParser().getContext();
+  MCSymbol *ExitSym = Ctx.createTempSymbol("lthl_shift_exit", true);
+  MCSymbol *LoopSym = Ctx.createTempSymbol("lthl_shift_loop", true);
+  auto SymOp = [&](MCSymbol *Sym) {
+    return MCOperand::createExpr(MCSymbolRefExpr::create(Sym, Ctx));
+  };
+
+  // Rd := Rs -- also the correct final answer on the amt-already-zero
+  // fast path.
+  emit(LTHL::ADD, {MCOperand::createReg(Rd), MCOperand::createReg(Rs),
+                    MCOperand::createReg(LTHL::R0)});
+  // r28 := 1 -- the loop's per-iteration decrement constant (see ADDI's
+  // comment in LTHLInstrInfo.td: no reg-immediate ALU op exists, so
+  // decrementing needs a real register holding 1).
+  emit(LTHL::LD, {MCOperand::createReg(LTHL::R28), MCOperand::createImm(1)});
+  // Test amt == 0 up front and skip the loop entirely if so -- same
+  // SUB-into-r29-then-JZ shape ZERO_TEST_BR_PSEUDO's post-RA expansion
+  // builds (see LTHLInstrInfo::expandPostRAPseudo).
+  emit(LTHL::SUB, {MCOperand::createReg(LTHL::R29), MCOperand::createReg(Amt),
+                    MCOperand::createReg(LTHL::R0)});
+  emit(LTHL::JZ, {SymOp(ExitSym)});
+
+  Out.emitLabel(LoopSym, IDLoc);
+  emitBitOnce();
+  emit(LTHL::SUB, {MCOperand::createReg(Amt), MCOperand::createReg(Amt),
+                    MCOperand::createReg(LTHL::R28)});
+  emit(LTHL::SUB, {MCOperand::createReg(LTHL::R29), MCOperand::createReg(Amt),
+                    MCOperand::createReg(LTHL::R0)});
+  emit(LTHL::JZ, {SymOp(ExitSym)});
+  emit(LTHL::J, {SymOp(LoopSym)});
+
+  Out.emitLabel(ExitSym, IDLoc);
+  return false;
+}
+
 bool LTHLAsmParser::matchAndEmitInstruction(SMLoc Loc, unsigned &Opcode,
                                              OperandVector &Operands,
                                              MCStreamer &Out,
                                              uint64_t &ErrorInfo,
                                              bool MatchingInlineAsm) {
-  // "call" is a hand-expanded pseudo-mnemonic, not a real
-  // LTHLInstrInfo.td instruction -- see expandCall's comment.
-  if (static_cast<LTHLOperand &>(*Operands[0]).getToken() == "call")
+  // "call"/"shl"/"srl"/"sra" are hand-expanded pseudo-mnemonics, not
+  // real LTHLInstrInfo.td instructions -- see expandCall's/expandShift's
+  // comments.
   StringRef Mnemonic = static_cast<LTHLOperand &>(*Operands[0]).getToken();
   if (Mnemonic == "call")
     return expandCall(Operands, Loc, Out);
+  if (Mnemonic == "shl")
+    return expandShift(Operands, Loc, Out, LTHLShiftKind::SHL);
+  if (Mnemonic == "srl")
+    return expandShift(Operands, Loc, Out, LTHLShiftKind::SRL);
+  if (Mnemonic == "sra")
+    return expandShift(Operands, Loc, Out, LTHLShiftKind::SRA);
 
   MCInst Inst;
   unsigned MatchResult =
