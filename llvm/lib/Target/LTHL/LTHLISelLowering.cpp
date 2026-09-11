@@ -424,25 +424,30 @@ SDValue LTHLTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     report_fatal_error("LTHL varargs calls are not supported yet");
 
   // Direct calls to a global function or external symbol: materialize
-  // the symbol's address via LTHLISD::WRAPPER, then explicitly copy it 
-  // into a register so that it always matches the register-callee path 
-  // and selects your CALL_PSEUDO instruction pattern.
+  // the symbol's address via LTHLISD::WRAPPER (selected onto LD by the
+  // Pat rules in LTHLInstrInfo.td) and pass the resulting SDValue
+  // straight through as Callee. This used to be forced through a
+  // hardcoded CopyToReg(R28)/CopyFromReg(R28) round-trip -- that was
+  // both unnecessary (CALL_PSEUDO's `(ins GPR:$target)` operand accepts
+  // any virtual register the normal SSA way, same as emitADDI/emitBR_CC's
+  // scratch vregs) and unsafe, since R28 was an ordinary allocatable GPR
+  // at the time: nothing stopped the address materialized here from
+  // getting register-coalesced into R28 across its *entire* live range
+  // (not just the instant before the call) while some unrelated value
+  // elsewhere in the function was also allocated R28, corrupting the
+  // callee address. R28 is now reserved (see
+  // LTHLRegisterInfo::getReservedRegs) as defense in depth, but removing
+  // the hardcoded physical register here as well is the actual fix --
+  // there's no longer any reason for LowerCall to know or care which
+  // physical register the callee address ends up in.
   if (auto *G = dyn_cast<GlobalAddressSDNode>(Callee)) {
     SDValue TGA = DAG.getTargetGlobalAddress(G->getGlobal(), DL, MVT::i32,
                                               G->getOffset());
     Callee = DAG.getNode(LTHLISD::WRAPPER, DL, MVT::i32, TGA);
     
-    // Force the address into a register and update the chain dependency
-    SDValue TargetReg = DAG.getTargetFrameIndex(0, MVT::i32); // Temporary placeholder if needed, usually empty copy suffices:
-    Chain = DAG.getCopyToReg(Chain, DL, LTHL::R28, Callee); // Copying into R28 matching your parser's choice
-    Callee = DAG.getCopyFromReg(Chain, DL, LTHL::R28, MVT::i32);
   } else if (auto *E = dyn_cast<ExternalSymbolSDNode>(Callee)) {
     SDValue TES = DAG.getTargetExternalSymbol(E->getSymbol(), MVT::i32);
     Callee = DAG.getNode(LTHLISD::WRAPPER, DL, MVT::i32, TES);
-    
-    // Force the address into a register and update the chain dependency
-    Chain = DAG.getCopyToReg(Chain, DL, LTHL::R28, Callee);
-    Callee = DAG.getCopyFromReg(Chain, DL, LTHL::R28, MVT::i32);
   }
 
   MachineFunction &MF = DAG.getMachineFunction();
@@ -691,6 +696,9 @@ void LTHLTargetLowering::emitCondBranch(MachineBasicBlock *BB,
 
     // N=1 path, in NSetBB: N==V here iff V=1, so JV tests the N==V
     // (DestOnNV) case -- the mirror image of the N=0 path above.
+    // NOTE: this and BB's own branches above still carry the FLAGS/
+    // spill-code exposure described in the comment near the top of
+    // this file -- see that note for status.
     BuildMI(NSetBB, DL, TII.get(LTHL::JV)).addMBB(DestOnNV ? Dest : FalseSucc);
     BuildMI(NSetBB, DL, TII.get(LTHL::J)).addMBB(DestOnNV ? FalseSucc : Dest);
     break;
