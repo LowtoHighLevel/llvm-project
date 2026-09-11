@@ -24,6 +24,25 @@ using namespace llvm;
 
 #define DEBUG_TYPE "lthl-lower"
 
+// NOTE on FLAGS vs. spill code: LTHL's ALU has no flag-transparent
+// instruction -- even the ADD used to materialize a spill slot's
+// address (no base+offset addressing exists in hardware) sets FLAGS,
+// same as a real compare does. Every compare-then-branch sequence this
+// file builds is therefore vulnerable to the register allocator's
+// generic spill-code placement dropping a flag-clobbering instruction
+// between a SUB and the branch(es) reading it -- a real, reproduced bug
+// (see emitShift's zero-tests, now fixed via ZERO_TEST_BR_PSEUDO in
+// LTHLInstrInfo.td, and that def's comment for why an earlier
+// pre-RA-bundling attempt here made things worse instead of better).
+// emitBR_CC/emitSETCC/emitSELECT_CC's arbitrary two-register compares
+// still build a real SUB ahead of a real branch sequence the same way
+// emitShift's zero-tests used to, and so still carry the same
+// theoretical exposure -- not yet given the ZERO_TEST_BR_PSEUDO
+// treatment, since that pseudo only knows how to compare a register
+// against zero. Worth the same fix (a general two-register CMP_BR
+// pseudo, or reusing ZERO_TEST_BR_PSEUDO plus a separate compute-the-
+// difference step) in a follow-up.
+
 LTHLTargetLowering::LTHLTargetLowering(const TargetMachine &TM,
                                         const LTHLSubtarget &STI)
     : TargetLowering(TM, STI) {
@@ -65,6 +84,7 @@ LTHLTargetLowering::LTHLTargetLowering(const TargetMachine &TM,
     setLoadExtAction(ISD::ZEXTLOAD, MVT::i32, VT, Custom);
     setLoadExtAction(ISD::SEXTLOAD, MVT::i32, VT, Custom);
     setLoadExtAction(ISD::EXTLOAD, MVT::i32, VT, Custom);
+
     // No i8/i16 register class exists (GPR is i32-only), so narrowing
     // a computed i32 value back to i8/i16 sign-correctly (e.g. `(char)
     // (x + y)` after C's integer-promotion arithmetic) is expressed by
