@@ -330,7 +330,7 @@ def : Pat<(LTHLWrapper texternalsym:$dst), (LD texternalsym:$dst)>;
 // MemWidth comment above FormMR -- keeps this instruction's encoding
 // bit-for-bit identical to every READ emitted before the WIDTH field
 // existed.
-let mayLoad = 1 in
+let mayLoad = 1, Defs = [FLAGS] in
 def READ : FormMR<0x2, WIDTH_32.Value, (outs GPR:$data), (ins GPR:$addr),
                   "read $addr, $data",
                   [(set GPR:$data, (load GPR:$addr))]>;
@@ -345,7 +345,7 @@ def READ : FormMR<0x2, WIDTH_32.Value, (outs GPR:$data), (ins GPR:$addr),
 // zero-extended or sign-extended (or need a Custom-lowered
 // zextload/sextload split the way most targets do it) is not yet pinned
 // down at the ISel/Pat level; these defs establish the encoding only.
-let mayLoad = 1 in {
+let mayLoad = 1, Defs = [FLAGS] in {
 def READ8 : FormMR<0x2, WIDTH_8.Value, (outs GPR:$data), (ins GPR:$addr),
                     "read8 $addr, $data", []>;
 def READ16 : FormMR<0x2, WIDTH_16.Value, (outs GPR:$data), (ins GPR:$addr),
@@ -356,8 +356,7 @@ def READ16 : FormMR<0x2, WIDTH_16.Value, (outs GPR:$data), (ins GPR:$addr),
 // opc=0x3 is the next unused value (see READ's comment above for the
 // ones already taken). WIDTH_32 keeps this bit-for-bit identical to
 // every WRITE emitted before the WIDTH field existed.
-let mayStore = 1 in
-
+let mayStore = 1, Defs = [FLAGS] in
 def WRITE : FormMW<0x3, WIDTH_32.Value, (outs), (ins GPR:$addr, GPR:$data),
                     "write $addr, $data",
                     [(store GPR:$data, GPR:$addr)]>;
@@ -366,7 +365,7 @@ def WRITE : FormMW<0x3, WIDTH_32.Value, (outs), (ins GPR:$addr, GPR:$data),
 // low 8/16 bits of $data are written to memory; see READ8/READ16's
 // comment above for the same ISel-wiring caveat (encoding only, no
 // truncstore Pat yet).
-let mayStore = 1 in {
+let mayStore = 1, Defs = [FLAGS] in {
 def WRITE8 : FormMW<0x3, WIDTH_8.Value, (outs), (ins GPR:$addr, GPR:$data),
                      "write8 $addr, $data", []>;
 def WRITE16 : FormMW<0x3, WIDTH_16.Value, (outs), (ins GPR:$addr, GPR:$data),
