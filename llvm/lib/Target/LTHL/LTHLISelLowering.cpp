@@ -444,7 +444,6 @@ SDValue LTHLTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     SDValue TGA = DAG.getTargetGlobalAddress(G->getGlobal(), DL, MVT::i32,
                                               G->getOffset());
     Callee = DAG.getNode(LTHLISD::WRAPPER, DL, MVT::i32, TGA);
-    
   } else if (auto *E = dyn_cast<ExternalSymbolSDNode>(Callee)) {
     SDValue TES = DAG.getTargetExternalSymbol(E->getSymbol(), MVT::i32);
     Callee = DAG.getNode(LTHLISD::WRAPPER, DL, MVT::i32, TES);
@@ -558,7 +557,48 @@ LTHLTargetLowering::emitADDI(MachineInstr &MI, MachineBasicBlock *BB) const {
   // pre-RA, so a fresh virtual register works and the allocator handles
   // it normally.
   Register Scratch = MRI.createVirtualRegister(&LTHL::GPRRegClass);
-  BuildMI(*BB, MI, DL, TII.get(LTHL::LD), Scratch).addImm(Imm);
+
+  if (isInt<24>(Imm)) {
+    // Fits LD's simm24 field directly -- the overwhelmingly common case.
+    BuildMI(*BB, MI, DL, TII.get(LTHL::LD), Scratch).addImm(Imm);
+  } else {
+    // Out-of-range constant. This is the MachineInstr-level twin of the
+    // problem LTHLISelDAGToDAG.cpp's selectConstant() handles at the
+    // SelectionDAG level -- but ADDI's immediate arrives here as a bare
+    // MachineOperand, already past DAG legalization/isel, so it can't be
+    // routed back through selectConstant(). Build the same Horner's-
+    // method byte-at-a-time materialization directly with real
+    // MachineInstrs instead: LD the top byte, then repeatedly shift the
+    // accumulator left 8 (as eight self-add doublings -- no barrel
+    // shifter/immediate-shift instruction exists, same idiom emitShift
+    // uses at runtime for SHL_PSEUDO) and OR in the next byte. Every
+    // individual byte (0-255) trivially fits simm24, so there's no range
+    // concern building the pieces. Deliberately NOT emitted as
+    // SHL_PSEUDO/OR pseudo nodes here -- that would depend on this
+    // freshly-inserted pseudo being revisited by a second round of
+    // custom insertion, which isn't guaranteed from inside this hook.
+    uint32_t UVal = static_cast<uint32_t>(Imm);
+    Register Acc = MRI.createVirtualRegister(&LTHL::GPRRegClass);
+    BuildMI(*BB, MI, DL, TII.get(LTHL::LD), Acc)
+        .addImm(static_cast<int64_t>((UVal >> 24) & 0xFFu));
+
+    for (int Shift = 16; Shift >= 0; Shift -= 8) {
+      for (int Bit = 0; Bit < 8; ++Bit) {
+        Register Doubled = MRI.createVirtualRegister(&LTHL::GPRRegClass);
+        BuildMI(*BB, MI, DL, TII.get(LTHL::ADD), Doubled)
+            .addReg(Acc).addReg(Acc);
+        Acc = Doubled;
+      }
+      Register Byte = MRI.createVirtualRegister(&LTHL::GPRRegClass);
+      BuildMI(*BB, MI, DL, TII.get(LTHL::LD), Byte)
+          .addImm(static_cast<int64_t>((UVal >> Shift) & 0xFFu));
+      Register Ored = MRI.createVirtualRegister(&LTHL::GPRRegClass);
+      BuildMI(*BB, MI, DL, TII.get(LTHL::OR), Ored).addReg(Acc).addReg(Byte);
+      Acc = Ored;
+    }
+    Scratch = Acc;
+  }
+
   BuildMI(*BB, MI, DL, TII.get(LTHL::ADD), Dst).addReg(Src).addReg(Scratch);
 
   MI.eraseFromParent();
